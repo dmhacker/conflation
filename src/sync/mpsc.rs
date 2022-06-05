@@ -92,6 +92,7 @@ where
     pub fn recv(&mut self) -> Result<(K, V), RecvError> {
         let (lock, cvar) = &*self.control;
         let mut control_guard = lock.lock().unwrap();
+        // TODO(dmhacker): pull drain operation out to separate function
         // The queue should be checked before the disconnect flag as
         // a receiver is still allowed to drain a disconnected queue.
         if let Some(head) = control_guard.queue.pop_front() {
@@ -122,6 +123,7 @@ where
     pub fn recv_timeout(&mut self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
         let (lock, cvar) = &*self.control;
         let mut control_guard = lock.lock().unwrap();
+        // TODO(dmhacker): pull drain operation out to separate function
         // The queue should be checked before the disconnect flag as
         // a receiver is still allowed to drain a disconnected queue.
         if let Some(head) = control_guard.queue.pop_front() {
