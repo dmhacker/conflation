@@ -26,6 +26,8 @@ only that a key is required to be specified upon submission. The key and value a
 returned by the receiver.
 
 ```rust
+use conflation::sync::mpsc::channel;
+
 let (mut tx, mut rx) = channel();
 // Both messages are tagged with key = 1
 let tx_result1 = tx.send(1, "foo".to_owned()).unwrap();
