@@ -30,8 +30,10 @@ let (mut tx, mut rx) = channel();
 // Both messages are tagged with key = 1
 let tx_result1 = tx.send(1, "foo".to_owned()).unwrap();
 let tx_result2 = tx.send(1, "bar".to_owned()).unwrap();
-// The receiver may yield either (1, "foo") or (1, "bar"), as (1, "foo") is allowed to be conflated
-let rx_result = rx.recv();
+// The received key will always be 1.
+// However, the receiver may yield either "foo" or "bar", as (1, "foo") may be conflated in-flight.
+let (key, value) = rx.recv().unwrap();
+...
 ```
 
 ## Roadmap
