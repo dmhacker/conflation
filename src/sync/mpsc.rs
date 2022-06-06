@@ -45,7 +45,7 @@ where
     K: Eq,
     K: Hash,
 {
-    pub fn send(&mut self, key: K, value: V) -> Result<(), SendError<(K, V)>> {
+    pub fn send(&self, key: K, value: V) -> Result<(), SendError<(K, V)>> {
         let (lock, cvar) = &*self.control;
         let mut control_guard = lock.lock().unwrap();
         if control_guard.disconnected {
@@ -74,7 +74,7 @@ where
     K: Eq,
     K: Hash,
 {
-    pub fn try_recv(&mut self) -> Result<(K, V), TryRecvError> {
+    pub fn try_recv(&self) -> Result<(K, V), TryRecvError> {
         let (lock, _) = &*self.control;
         let mut control_guard = lock.lock().unwrap();
         match control_guard.queue.pop_front() {
@@ -89,7 +89,7 @@ where
         }
     }
 
-    pub fn recv(&mut self) -> Result<(K, V), RecvError> {
+    pub fn recv(&self) -> Result<(K, V), RecvError> {
         let (lock, cvar) = &*self.control;
         let mut control_guard = lock.lock().unwrap();
         // TODO(dmhacker): pull drain operation out to separate function
@@ -120,7 +120,7 @@ where
         }
     }
 
-    pub fn recv_timeout(&mut self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
         let (lock, cvar) = &*self.control;
         let mut control_guard = lock.lock().unwrap();
         // TODO(dmhacker): pull drain operation out to separate function
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn recv_has_no_conflations() {
-        let (mut tx, mut rx) = channel();
+        let (tx, rx) = channel();
         // Simple send and recv's
         assert_eq!(tx.send(1, "test 1".to_owned()), Ok(()));
         assert_eq!(rx.recv(), Ok((1, "test 1".to_owned())));
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn try_recv_has_single_conflation() {
-        let (mut tx, mut rx) = channel();
+        let (tx, rx) = channel();
         // All insertions correspond to a single key
         for i in 0..1000 {
             assert_eq!(tx.send(1337, format!("test {i}").to_owned()), Ok(()));
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn try_recv_has_many_conflations() {
-        let (mut tx, mut rx) = channel();
+        let (tx, rx) = channel();
         // Add duplicate insertions for each index
         for j in 0..4 {
             for i in 0..1000 {
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn recv_timeout_times_out() {
-        let (_tx, mut rx) = channel::<i64, i64>();
+        let (_tx, rx) = channel::<i64, i64>();
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(100)),
             Err(RecvTimeoutError::Timeout)
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn sender_immediately_disconnects() {
-        let (tx, mut rx) = channel::<i64, i64>();
+        let (tx, rx) = channel::<i64, i64>();
         assert_eq!(
             rx.try_recv(),
             Err(TryRecvError::Empty)
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn sender_clones_gradually_disconnect() {
-        let (tx, mut rx) = channel::<i64, i64>();
+        let (tx, rx) = channel::<i64, i64>();
         let tx1 = tx.clone();
         let tx2 = tx.clone();
         assert_eq!(
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn receiver_immediately_disconnects() {
-        let (mut tx, rx) = channel();
+        let (tx, rx) = channel();
         drop(rx);
         assert_eq!(tx.send(1, 2), Err(SendError((1, 2))));
     }
