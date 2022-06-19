@@ -2,29 +2,75 @@ use linked_hash_map::LinkedHashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, WaitTimeoutResult};
 use std::time::Duration;
+
+struct Signaller {
+    waiter: Arc<(Mutex<Vec<i64>>, Condvar)>,
+}
+
+impl Signaller {
+    pub fn signal(&self, token: i64) {
+        let (lock, cvar) = &*self.waiter;
+        let mut tokens_guard = lock.lock().unwrap();
+        tokens_guard.push(token);
+        cvar.notify_one();
+    }
+
+    pub fn wait<F, T>(&self, mut f: F) -> T
+    where
+        F: FnMut(&Vec<i64>) -> T,
+    {
+        let (lock, cvar) = &*self.waiter;
+        let mut tokens_guard = lock.lock().unwrap();
+        tokens_guard = cvar
+            .wait_while(tokens_guard, |tokens| tokens.is_empty())
+            .unwrap();
+        f(&*tokens_guard)
+    }
+
+    pub fn wait_timeout<F, T>(&self, timeout: Duration, mut f: F) -> T
+    where
+        F: FnMut(WaitTimeoutResult, &Vec<i64>) -> T,
+    {
+        let (lock, cvar) = &*self.waiter;
+        let tokens_guard = lock.lock().unwrap();
+        let timeout_result = cvar
+            .wait_timeout_while(tokens_guard, timeout, |tokens| tokens.is_empty())
+            .unwrap();
+        f(timeout_result.1, &*timeout_result.0)
+    }
+}
+
+enum SignallerResult<K, V> {
+    Data((K, V)),
+    Blocked(Signaller),
+    Disconnected,
+}
 
 struct ControlBlock<K, V> {
     queue: LinkedHashMap<K, V>,
     disconnected: bool,
+    signaller: Option<(i64, Signaller)>,
 }
 
 pub struct Sender<K, V> {
-    control: Arc<(Mutex<ControlBlock<K, V>>, Condvar)>,
     refcount: Arc<AtomicUsize>,
+    control: Arc<Mutex<ControlBlock<K, V>>>,
 }
 
 impl<K, V> Drop for Sender<K, V> {
     fn drop(&mut self) {
         let remaining = self.refcount.fetch_sub(1, Ordering::SeqCst) - 1;
         if remaining == 0 {
-            let (lock, cvar) = &*self.control;
-            let mut control_guard = lock.lock().unwrap();
+            let mut control_guard = self.control.lock().unwrap();
             // Receiver could have already disconnected
             if !control_guard.disconnected {
                 control_guard.disconnected = true;
-                cvar.notify_one();
+                if let Some((token, signaller)) = &control_guard.signaller {
+                    signaller.signal(*token);
+                    control_guard.signaller = None;
+                }
             }
         }
     }
@@ -34,8 +80,8 @@ impl<K, V> Clone for Sender<K, V> {
     fn clone(&self) -> Sender<K, V> {
         self.refcount.fetch_add(1, Ordering::SeqCst);
         Sender {
+            refcount: self.refcount.clone(),
             control: self.control.clone(),
-            refcount: self.refcount.clone()
         }
     }
 }
@@ -46,28 +92,30 @@ where
     K: Hash,
 {
     pub fn send(&self, key: K, value: V) -> Result<(), SendError<(K, V)>> {
-        let (lock, cvar) = &*self.control;
-        let mut control_guard = lock.lock().unwrap();
+        let mut control_guard = self.control.lock().unwrap();
         if control_guard.disconnected {
             return Err(SendError((key, value)));
         }
         control_guard.queue.insert(key, value);
-        cvar.notify_one();
+        if let Some((token, signaller)) = &control_guard.signaller {
+            signaller.signal(*token);
+            control_guard.signaller = None;
+        }
         Ok(())
     }
 }
 
 pub struct Receiver<K, V> {
-    control: Arc<(Mutex<ControlBlock<K, V>>, Condvar)>,
+    control: Arc<Mutex<ControlBlock<K, V>>>,
 }
 
 impl<K, V> Drop for Receiver<K, V> {
     fn drop(&mut self) {
-        let (lock, _) = &*self.control;
-        let mut control_guard = lock.lock().unwrap();
-        control_guard.disconnected = true;
+        self.control.lock().unwrap().disconnected = true;
     }
 }
+
+const DEFAULT_TOKEN: i64 = 0;
 
 impl<K, V> Receiver<K, V>
 where
@@ -75,8 +123,7 @@ where
     K: Hash,
 {
     pub fn try_recv(&self) -> Result<(K, V), TryRecvError> {
-        let (lock, _) = &*self.control;
-        let mut control_guard = lock.lock().unwrap();
+        let mut control_guard = self.control.lock().unwrap();
         match control_guard.queue.pop_front() {
             Some(head) => Ok(head),
             None => {
@@ -90,69 +137,67 @@ where
     }
 
     pub fn recv(&self) -> Result<(K, V), RecvError> {
-        let (lock, cvar) = &*self.control;
-        let mut control_guard = lock.lock().unwrap();
-        // TODO(dmhacker): pull drain operation out to separate function
-        // The queue should be checked before the disconnect flag as
-        // a receiver is still allowed to drain a disconnected queue.
-        if let Some(head) = control_guard.queue.pop_front() {
-            return Ok(head);
-        }
-        if control_guard.disconnected {
-            return Err(RecvError);
-        }
-        control_guard = cvar
-            .wait_while(control_guard, |control| {
-                !control.disconnected && control.queue.is_empty()
-            })
-            .unwrap();
-        // After a wake-up, the above still applies; the queue should be
-        // drained before a disconnect is reported
-        match control_guard.queue.pop_front() {
-            Some(head) => Ok(head),
-            None => {
-                if control_guard.disconnected {
-                    return Err(RecvError);
-                } else {
-                    panic!("wakeup invariant failed: receiver was not disconnected and queue was empty")
-                }
+        match self.try_recv_or_signal() {
+            SignallerResult::Data(data) => return Ok(data),
+            SignallerResult::Blocked(signaller) => {
+                signaller.wait(|tokens| {
+                    if tokens.len() != 0 || tokens[0] != DEFAULT_TOKEN {
+                        panic!("signaller corrupted: expected token from sender")
+                    }
+                });
             }
+            SignallerResult::Disconnected => return Err(RecvError),
+        }
+        match self.try_recv() {
+            Ok(data) => return Ok(data),
+            Err(TryRecvError::Disconnected) => return Err(RecvError),
+            Err(TryRecvError::Empty) => panic!("receiver woke up to empty queue"),
         }
     }
 
     pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
-        let (lock, cvar) = &*self.control;
-        let mut control_guard = lock.lock().unwrap();
-        // TODO(dmhacker): pull drain operation out to separate function
-        // The queue should be checked before the disconnect flag as
-        // a receiver is still allowed to drain a disconnected queue.
-        if let Some(head) = control_guard.queue.pop_front() {
-            return Ok(head);
-        }
-        if control_guard.disconnected {
-            return Err(RecvTimeoutError::Disconnected);
-        }
-        let wait_result = cvar
-            .wait_timeout_while(control_guard, timeout, |control| {
-                !control.disconnected && control.queue.is_empty()
-            })
-            .unwrap();
-        if wait_result.1.timed_out() {
-            return Err(RecvTimeoutError::Timeout);
-        }
-        control_guard = wait_result.0;
-        // After a wake-up, the above still applies; the queue should be
-        // drained before a disconnect is reported
-        match control_guard.queue.pop_front() {
-            Some(head) => Ok(head),
-            None => {
-                if control_guard.disconnected {
-                    return Err(RecvTimeoutError::Disconnected);
-                } else {
-                    panic!("wakeup invariant failed: receiver was not disconnected and queue was empty")
+        match self.try_recv_or_signal() {
+            SignallerResult::Data(data) => return Ok(data),
+            SignallerResult::Blocked(signaller) => {
+                if signaller.wait_timeout(timeout, |timeout_result, tokens| {
+                    if timeout_result.timed_out() {
+                        return true;
+                    }
+                    if tokens.len() != 0 || tokens[0] != DEFAULT_TOKEN {
+                        panic!("signaller corrupted: expected token from sender")
+                    }
+                    false
+                }) {
+                    return Err(RecvTimeoutError::Timeout);
                 }
             }
+            SignallerResult::Disconnected => return Err(RecvTimeoutError::Disconnected),
         }
+        match self.try_recv() {
+            Ok(data) => return Ok(data),
+            Err(TryRecvError::Disconnected) => return Err(RecvTimeoutError::Timeout),
+            Err(TryRecvError::Empty) => panic!("receiver woke up to empty queue"),
+        }
+    }
+
+    fn try_recv_or_signal(&self) -> SignallerResult<K, V> {
+        let signaller = Signaller {
+            waiter: Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new())),
+        };
+        let mut control_guard = self.control.lock().unwrap();
+        if let Some(head) = control_guard.queue.pop_front() {
+            return SignallerResult::Data(head);
+        }
+        if control_guard.disconnected {
+            return SignallerResult::Disconnected;
+        }
+        control_guard.signaller = Some((
+            DEFAULT_TOKEN,
+            Signaller {
+                waiter: signaller.waiter.clone(),
+            },
+        ));
+        SignallerResult::Blocked(signaller)
     }
 }
 
@@ -161,18 +206,16 @@ where
     K: Eq,
     K: Hash,
 {
-    let control = ControlBlock::<K, V> {
+    let control = Arc::new(Mutex::new(ControlBlock::<K, V> {
         queue: LinkedHashMap::<K, V>::new(),
         disconnected: false,
-    };
-    let control_arc = Arc::new((Mutex::new(control), Condvar::new()));
+        signaller: None,
+    }));
     let tx = Sender::<K, V> {
-        control: control_arc.clone(),
         refcount: Arc::new(AtomicUsize::new(1)),
+        control: control.clone(),
     };
-    let rx = Receiver::<K, V> {
-        control: control_arc,
-    };
+    let rx = Receiver::<K, V> { control: control };
     (tx, rx)
 }
 
@@ -274,10 +317,7 @@ mod tests {
     #[test]
     fn sender_immediately_disconnects() {
         let (tx, rx) = channel::<i64, i64>();
-        assert_eq!(
-            rx.try_recv(),
-            Err(TryRecvError::Empty)
-        );
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
         drop(tx);
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(100)),
@@ -292,16 +332,10 @@ mod tests {
         let (tx, rx) = channel::<i64, i64>();
         let tx1 = tx.clone();
         let tx2 = tx.clone();
-        assert_eq!(
-            rx.try_recv(),
-            Err(TryRecvError::Empty)
-        );
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
         drop(tx);
         drop(tx2);
-        assert_eq!(
-            rx.try_recv(),
-            Err(TryRecvError::Empty)
-        );
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
         drop(tx1);
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(100)),
