@@ -326,8 +326,13 @@ mod tests {
     #[test]
     fn recv_deadline_times_out() {
         let (_tx, rx) = unbounded::<i64, i64>();
+        // Deadline in the past sets a timeout of 0
         assert_eq!(
             rx.recv_deadline(Instant::now() - Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout)
+        );
+        assert_eq!(
+            rx.recv_deadline(Instant::now() + Duration::from_millis(100)),
             Err(RecvTimeoutError::Timeout)
         );
     }
