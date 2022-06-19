@@ -3,7 +3,7 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, WaitTimeoutResult};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct Signaller {
     waiter: Arc<(Mutex<Vec<i64>>, Condvar)>,
@@ -29,10 +29,15 @@ impl Signaller {
         f(&*tokens_guard)
     }
 
-    pub fn wait_timeout<F, T>(&self, timeout: Duration, mut f: F) -> T
+    pub fn wait_deadline<F, T>(&self, deadline: Instant, mut f: F) -> T
     where
         F: FnMut(WaitTimeoutResult, &Vec<i64>) -> T,
     {
+        let timeout = if deadline > Instant::now() {
+            deadline - Instant::now()
+        } else {
+            Duration::from_millis(0)
+        };
         let (lock, cvar) = &*self.waiter;
         let tokens_guard = lock.lock().unwrap();
         let timeout_result = cvar
@@ -137,7 +142,7 @@ where
     }
 
     pub fn recv(&self) -> Result<(K, V), RecvError> {
-        match self.try_recv_or_signal() {
+        match self.try_recv_or_install_signaller() {
             SignallerResult::Data(data) => return Ok(data),
             SignallerResult::Blocked(signaller) => {
                 signaller.wait(|tokens| {
@@ -155,11 +160,11 @@ where
         }
     }
 
-    pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
-        match self.try_recv_or_signal() {
+    pub fn recv_deadline(&self, deadline: Instant) -> Result<(K, V), RecvTimeoutError> {
+        match self.try_recv_or_install_signaller() {
             SignallerResult::Data(data) => return Ok(data),
             SignallerResult::Blocked(signaller) => {
-                if signaller.wait_timeout(timeout, |timeout_result, tokens| {
+                if signaller.wait_deadline(deadline, |timeout_result, tokens| {
                     if timeout_result.timed_out() {
                         return true;
                     }
@@ -180,7 +185,11 @@ where
         }
     }
 
-    fn try_recv_or_signal(&self) -> SignallerResult<K, V> {
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
+        self.recv_deadline(Instant::now() + timeout)
+    }
+
+    fn try_recv_or_install_signaller(&self) -> SignallerResult<K, V> {
         let signaller = Signaller {
             waiter: Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new())),
         };
@@ -201,7 +210,7 @@ where
     }
 }
 
-pub fn channel<K, V>() -> (Sender<K, V>, Receiver<K, V>)
+pub fn unbounded<K, V>() -> (Sender<K, V>, Receiver<K, V>)
 where
     K: Eq,
     K: Hash,
@@ -221,14 +230,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::sync::mpsc::channel;
+    use crate::sync::mpsc::unbounded;
     use std::collections::HashMap;
     use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn recv_has_no_conflations() {
-        let (tx, rx) = channel();
+        let (tx, rx) = unbounded();
         // Simple send and recv's
         assert_eq!(tx.send(1, "test 1".to_owned()), Ok(()));
         assert_eq!(rx.recv(), Ok((1, "test 1".to_owned())));
@@ -243,7 +252,7 @@ mod tests {
 
     #[test]
     fn try_recv_has_single_conflation() {
-        let (tx, rx) = channel();
+        let (tx, rx) = unbounded();
         // All insertions correspond to a single key
         for i in 0..1000 {
             assert_eq!(tx.send(1337, format!("test {i}").to_owned()), Ok(()));
@@ -273,7 +282,7 @@ mod tests {
 
     #[test]
     fn try_recv_has_many_conflations() {
-        let (tx, rx) = channel();
+        let (tx, rx) = unbounded();
         // Add duplicate insertions for each index
         for j in 0..4 {
             for i in 0..1000 {
@@ -307,7 +316,7 @@ mod tests {
 
     #[test]
     fn recv_timeout_times_out() {
-        let (_tx, rx) = channel::<i64, i64>();
+        let (_tx, rx) = unbounded::<i64, i64>();
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(100)),
             Err(RecvTimeoutError::Timeout)
@@ -315,8 +324,17 @@ mod tests {
     }
 
     #[test]
+    fn recv_deadline_times_out() {
+        let (_tx, rx) = unbounded::<i64, i64>();
+        assert_eq!(
+            rx.recv_deadline(Instant::now() - Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout)
+        );
+    }
+
+    #[test]
     fn sender_immediately_disconnects() {
-        let (tx, rx) = channel::<i64, i64>();
+        let (tx, rx) = unbounded::<i64, i64>();
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
         drop(tx);
         assert_eq!(
@@ -329,7 +347,7 @@ mod tests {
 
     #[test]
     fn sender_clones_gradually_disconnect() {
-        let (tx, rx) = channel::<i64, i64>();
+        let (tx, rx) = unbounded::<i64, i64>();
         let tx1 = tx.clone();
         let tx2 = tx.clone();
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
@@ -347,7 +365,7 @@ mod tests {
 
     #[test]
     fn receiver_immediately_disconnects() {
-        let (tx, rx) = channel();
+        let (tx, rx) = unbounded();
         drop(rx);
         assert_eq!(tx.send(1, 2), Err(SendError((1, 2))));
     }
