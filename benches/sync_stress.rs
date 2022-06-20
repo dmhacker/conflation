@@ -7,12 +7,10 @@ fn conflated_n_k_stress(n: u64, k: u64) {
     let mut consumers = vec![];
     for _ in 0..k {
         let rx_clone = rx.clone();
-        consumers.push(thread::spawn(move || {
-            loop {
-                match rx_clone.recv() {
-                    Err(_) => break,
-                    _ => (),
-                }
+        consumers.push(thread::spawn(move || loop {
+            match rx_clone.recv() {
+                Err(_) => break,
+                _ => (),
             }
         }));
     }
@@ -38,7 +36,10 @@ fn conflated_n_k_stress(n: u64, k: u64) {
 pub fn conflated_bench(c: &mut Criterion) {
     for n in vec![1000, 10000] {
         for k in vec![1, 2, 4, 6, 8] {
-            let title = format!("conflated | ({} items each, {} producers, {} consumers)", &n, &k, &k);
+            let title = format!(
+                "conflated | ({} items each, {} producers, {} consumers)",
+                &n, &k, &k
+            );
             c.bench_function(&title[..], |b| {
                 b.iter(|| conflated_n_k_stress(black_box(n), black_box(k)))
             });
