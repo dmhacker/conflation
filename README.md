@@ -35,7 +35,7 @@ let (key, value) = rx.recv().unwrap();
 Unlike `std::sync::mpsc` channels, `conflation::sync::mpmc` channels are
 multi-producer and multi-consumer. If multiple receivers are used, then this channel
 will function identically to a work-stealing queue, only that work submitted
-with the same key can optionally be conflated in transit.
+with the same key can potentially be conflated in transit.
 
 ## Planned Additions
 
