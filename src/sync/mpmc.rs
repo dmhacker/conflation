@@ -1,9 +1,10 @@
 use linked_hash_map::LinkedHashMap;
+use parking_lot::{Condvar, Mutex, WaitTimeoutResult};
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex, WaitTimeoutResult};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 struct Signaller {
@@ -13,7 +14,7 @@ struct Signaller {
 impl Signaller {
     pub fn signal(&self, token: i64) {
         let (lock, cvar) = &*self.waiter;
-        let mut tokens_guard = lock.lock().unwrap();
+        let mut tokens_guard = lock.lock();
         tokens_guard.push(token);
         cvar.notify_one();
     }
@@ -23,10 +24,8 @@ impl Signaller {
         F: FnMut(&Vec<i64>) -> T,
     {
         let (lock, cvar) = &*self.waiter;
-        let mut tokens_guard = lock.lock().unwrap();
-        tokens_guard = cvar
-            .wait_while(tokens_guard, |tokens| tokens.is_empty())
-            .unwrap();
+        let mut tokens_guard = lock.lock();
+        cvar.wait_while(&mut tokens_guard, |tokens| tokens.is_empty());
         f(&*tokens_guard)
     }
 
@@ -34,17 +33,11 @@ impl Signaller {
     where
         F: FnMut(WaitTimeoutResult, &Vec<i64>) -> T,
     {
-        let timeout = if deadline > Instant::now() {
-            deadline - Instant::now()
-        } else {
-            Duration::from_millis(0)
-        };
         let (lock, cvar) = &*self.waiter;
-        let tokens_guard = lock.lock().unwrap();
-        let timeout_result = cvar
-            .wait_timeout_while(tokens_guard, timeout, |tokens| tokens.is_empty())
-            .unwrap();
-        f(timeout_result.1, &*timeout_result.0)
+        let mut tokens_guard = lock.lock();
+        let timeout_result =
+            cvar.wait_while_until(&mut tokens_guard, |tokens| tokens.is_empty(), deadline);
+        f(timeout_result, &*tokens_guard)
     }
 }
 
@@ -70,7 +63,7 @@ impl<K, V> Drop for Sender<K, V> {
     fn drop(&mut self) {
         let remaining = self.refcount.fetch_sub(1, Ordering::SeqCst) - 1;
         if remaining == 0 {
-            let mut control_guard = self.control.lock().unwrap();
+            let mut control_guard = self.control.lock();
             // Receivers could have already disconnected
             if !control_guard.disconnected {
                 control_guard.disconnected = true;
@@ -103,7 +96,7 @@ where
     K: Hash,
 {
     pub fn send(&self, key: K, value: V) -> Result<(), SendError<(K, V)>> {
-        let mut control_guard = self.control.lock().unwrap();
+        let mut control_guard = self.control.lock();
         if control_guard.disconnected {
             return Err(SendError((key, value)));
         }
@@ -127,7 +120,7 @@ impl<K, V> Drop for Receiver<K, V> {
     fn drop(&mut self) {
         let remaining = self.refcount.fetch_sub(1, Ordering::SeqCst) - 1;
         if remaining == 0 {
-            self.control.lock().unwrap().disconnected = true;
+            self.control.lock().disconnected = true;
         }
     }
 }
@@ -150,7 +143,7 @@ where
     K: Hash,
 {
     pub fn try_recv(&self) -> Result<(K, V), TryRecvError> {
-        let mut control_guard = self.control.lock().unwrap();
+        let mut control_guard = self.control.lock();
         if control_guard.unreserved_count == 0 {
             return if control_guard.disconnected {
                 Err(TryRecvError::Disconnected)
@@ -178,7 +171,7 @@ where
             SignallerResult::Data(data) => return Ok(data),
             SignallerResult::Blocked(signaller) => {
                 signaller.wait(|tokens| {
-                    if tokens.len() != 0 || tokens[0] != DEFAULT_TOKEN {
+                    if tokens.len() == 0 || tokens[0] != DEFAULT_TOKEN {
                         panic!("signaller corrupted: expected token from sender")
                     }
                 });
@@ -196,7 +189,7 @@ where
                     if timeout_result.timed_out() {
                         return true;
                     }
-                    if tokens.len() != 0 || tokens[0] != DEFAULT_TOKEN {
+                    if tokens.len() == 0 || tokens[0] != DEFAULT_TOKEN {
                         panic!("signaller corrupted: expected token from sender")
                     }
                     false
@@ -220,7 +213,7 @@ where
         let signaller = Signaller {
             waiter: Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new())),
         };
-        let mut control_guard = self.control.lock().unwrap();
+        let mut control_guard = self.control.lock();
         if control_guard.unreserved_count > 0 {
             if let Some(head) = control_guard.queue.pop_front() {
                 control_guard.unreserved_count -= 1;
@@ -242,7 +235,7 @@ where
     }
 
     fn try_recv_reserved(&self) -> Result<(K, V), RecvError> {
-        let mut control_guard = self.control.lock().unwrap();
+        let mut control_guard = self.control.lock();
         if let Some(head) = control_guard.queue.pop_front() {
             return Ok(head);
         }
@@ -280,6 +273,7 @@ mod tests {
     use crate::sync::mpmc::unbounded;
     use std::collections::HashMap;
     use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -420,5 +414,21 @@ mod tests {
         let (tx, rx) = unbounded();
         drop(rx);
         assert_eq!(tx.send(1, 2), Err(SendError((1, 2))));
+    }
+
+    #[test]
+    fn receiver_moved_to_worker_thread() {
+        let (tx, rx) = unbounded();
+        let handle = thread::spawn(move || loop {
+            match rx.recv() {
+                Err(_) => break,
+                _ => (),
+            }
+        });
+        for i in 0..10000 {
+            tx.send(i, "some string".to_owned()).unwrap();
+        }
+        drop(tx);
+        handle.join().unwrap();
     }
 }

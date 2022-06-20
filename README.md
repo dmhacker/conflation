@@ -8,10 +8,15 @@ A conflating queue is generally useful when two conditions are met:
 1. A producer is enqueueing items at a faster rate than a slower consumer can dequeue them.
 2. It is acceptable to drop in-flight messages by retaining only the most recently produced message along some (key) boundary.
 
-An **important** note is that these channels do not offer the strong guarantee that 
-replacement will always occur if a new keyed entry is inserted. Instead, the producer is
-simply allowed to eliminate prior entries if necessary. The receiver should
-generally assume that unread priors are allowable within a keyed section of the queue.
+This channel offers the **strong** guarantee that a replacement will always occur
+if a new keyed entry is inserted into the channel and an unread duplicate is already present.
+In this case, the duplicate will be dropped, and the new entry will take its place at the
+back of the queue.
+
+Under the hood, the channel mechanism uses a linked hash map to perform conflation.
+This generally makes the channel slower than its `std` equivalents for workloads without
+many duplicate keys. Consider using this channel only when conflation is appropriate
+(e.g. to help with backpressure).
 
 ## Synchronous Usage
 
@@ -34,7 +39,7 @@ let (key, value) = rx.recv().unwrap();
 
 Unlike `std::sync::mpsc` channels, `conflation::sync::mpmc` channels are
 multi-producer and multi-consumer. If multiple receivers are used, then this channel
-will function identically to a work-stealing queue, only that work submitted
+will function identically to a work-sharing queue, only that work submitted
 with the same key can potentially be conflated in transit.
 
 ## Planned Additions
