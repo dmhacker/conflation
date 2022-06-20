@@ -1,1 +1,1 @@
-pub mod mpsc;
+pub mod mpmc;

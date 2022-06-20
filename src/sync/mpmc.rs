@@ -1,4 +1,5 @@
 use linked_hash_map::LinkedHashMap;
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError};
@@ -56,7 +57,8 @@ enum SignallerResult<K, V> {
 struct ControlBlock<K, V> {
     queue: LinkedHashMap<K, V>,
     disconnected: bool,
-    signaller: Option<(i64, Signaller)>,
+    unreserved_count: usize,
+    consumers: VecDeque<(i64, Signaller)>,
 }
 
 pub struct Sender<K, V> {
@@ -69,12 +71,16 @@ impl<K, V> Drop for Sender<K, V> {
         let remaining = self.refcount.fetch_sub(1, Ordering::SeqCst) - 1;
         if remaining == 0 {
             let mut control_guard = self.control.lock().unwrap();
-            // Receiver could have already disconnected
+            // Receivers could have already disconnected
             if !control_guard.disconnected {
                 control_guard.disconnected = true;
-                if let Some((token, signaller)) = &control_guard.signaller {
-                    signaller.signal(*token);
-                    control_guard.signaller = None;
+                // If there are any waiting consumers that will be
+                // woken by a disconnect, there should be no items
+                // currently in the queue. Upon disconnect, no more items
+                // can be added to the queue, so all of these consumers
+                // will receive a disconnect upon polling.
+                for (token, signaller) in control_guard.consumers.drain(..) {
+                    signaller.signal(token);
                 }
             }
         }
@@ -101,22 +107,38 @@ where
         if control_guard.disconnected {
             return Err(SendError((key, value)));
         }
-        control_guard.queue.insert(key, value);
-        if let Some((token, signaller)) = &control_guard.signaller {
-            signaller.signal(*token);
-            control_guard.signaller = None;
+        if control_guard.queue.insert(key, value).is_none() {
+            control_guard.unreserved_count += 1;
+            if let Some((token, signaller)) = control_guard.consumers.pop_back() {
+                control_guard.unreserved_count -= 1;
+                signaller.signal(token);
+            }
         }
         Ok(())
     }
 }
 
 pub struct Receiver<K, V> {
+    refcount: Arc<AtomicUsize>,
     control: Arc<Mutex<ControlBlock<K, V>>>,
 }
 
 impl<K, V> Drop for Receiver<K, V> {
     fn drop(&mut self) {
-        self.control.lock().unwrap().disconnected = true;
+        let remaining = self.refcount.fetch_sub(1, Ordering::SeqCst) - 1;
+        if remaining == 0 {
+            self.control.lock().unwrap().disconnected = true;
+        }
+    }
+}
+
+impl<K, V> Clone for Receiver<K, V> {
+    fn clone(&self) -> Receiver<K, V> {
+        self.refcount.fetch_add(1, Ordering::SeqCst);
+        Receiver {
+            refcount: self.refcount.clone(),
+            control: self.control.clone(),
+        }
     }
 }
 
@@ -129,20 +151,30 @@ where
 {
     pub fn try_recv(&self) -> Result<(K, V), TryRecvError> {
         let mut control_guard = self.control.lock().unwrap();
+        if control_guard.unreserved_count == 0 {
+            return if control_guard.disconnected {
+                Err(TryRecvError::Disconnected)
+            } else {
+                Err(TryRecvError::Empty)
+            };
+        }
         match control_guard.queue.pop_front() {
-            Some(head) => Ok(head),
+            Some(head) => {
+                control_guard.unreserved_count -= 1;
+                Ok(head)
+            }
             None => {
                 if control_guard.disconnected {
                     Err(TryRecvError::Disconnected)
                 } else {
-                    Err(TryRecvError::Empty)
+                    panic!("queue was empty but reported unreserved entries");
                 }
             }
         }
     }
 
     pub fn recv(&self) -> Result<(K, V), RecvError> {
-        match self.try_recv_or_install_signaller() {
+        match self.try_install_signaller() {
             SignallerResult::Data(data) => return Ok(data),
             SignallerResult::Blocked(signaller) => {
                 signaller.wait(|tokens| {
@@ -153,15 +185,11 @@ where
             }
             SignallerResult::Disconnected => return Err(RecvError),
         }
-        match self.try_recv() {
-            Ok(data) => return Ok(data),
-            Err(TryRecvError::Disconnected) => return Err(RecvError),
-            Err(TryRecvError::Empty) => panic!("receiver woke up to empty queue"),
-        }
+        self.try_recv_reserved()
     }
 
     pub fn recv_deadline(&self, deadline: Instant) -> Result<(K, V), RecvTimeoutError> {
-        match self.try_recv_or_install_signaller() {
+        match self.try_install_signaller() {
             SignallerResult::Data(data) => return Ok(data),
             SignallerResult::Blocked(signaller) => {
                 if signaller.wait_deadline(deadline, |timeout_result, tokens| {
@@ -178,10 +206,9 @@ where
             }
             SignallerResult::Disconnected => return Err(RecvTimeoutError::Disconnected),
         }
-        match self.try_recv() {
+        match self.try_recv_reserved() {
             Ok(data) => return Ok(data),
-            Err(TryRecvError::Disconnected) => return Err(RecvTimeoutError::Timeout),
-            Err(TryRecvError::Empty) => panic!("receiver woke up to empty queue"),
+            Err(RecvError) => return Err(RecvTimeoutError::Disconnected),
         }
     }
 
@@ -189,24 +216,40 @@ where
         self.recv_deadline(Instant::now() + timeout)
     }
 
-    fn try_recv_or_install_signaller(&self) -> SignallerResult<K, V> {
+    fn try_install_signaller(&self) -> SignallerResult<K, V> {
         let signaller = Signaller {
             waiter: Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new())),
         };
         let mut control_guard = self.control.lock().unwrap();
+        if control_guard.unreserved_count > 0 {
+            if let Some(head) = control_guard.queue.pop_front() {
+                control_guard.unreserved_count -= 1;
+                return SignallerResult::Data(head);
+            }
+            panic!("queue was empty but reported unreserved entries");
+        } else {
+            if control_guard.disconnected {
+                return SignallerResult::Disconnected;
+            }
+            control_guard.consumers.push_back((
+                DEFAULT_TOKEN,
+                Signaller {
+                    waiter: signaller.waiter.clone(),
+                },
+            ));
+            SignallerResult::Blocked(signaller)
+        }
+    }
+
+    fn try_recv_reserved(&self) -> Result<(K, V), RecvError> {
+        let mut control_guard = self.control.lock().unwrap();
         if let Some(head) = control_guard.queue.pop_front() {
-            return SignallerResult::Data(head);
+            return Ok(head);
         }
         if control_guard.disconnected {
-            return SignallerResult::Disconnected;
+            return Err(RecvError);
         }
-        control_guard.signaller = Some((
-            DEFAULT_TOKEN,
-            Signaller {
-                waiter: signaller.waiter.clone(),
-            },
-        ));
-        SignallerResult::Blocked(signaller)
+        panic!("receiver woke up to empty queue");
     }
 }
 
@@ -215,22 +258,26 @@ where
     K: Eq,
     K: Hash,
 {
-    let control = Arc::new(Mutex::new(ControlBlock::<K, V> {
-        queue: LinkedHashMap::<K, V>::new(),
+    let control = Arc::new(Mutex::new(ControlBlock {
+        queue: LinkedHashMap::new(),
         disconnected: false,
-        signaller: None,
+        unreserved_count: 0,
+        consumers: VecDeque::new(),
     }));
-    let tx = Sender::<K, V> {
+    let tx = Sender {
         refcount: Arc::new(AtomicUsize::new(1)),
         control: control.clone(),
     };
-    let rx = Receiver::<K, V> { control: control };
+    let rx = Receiver {
+        refcount: Arc::new(AtomicUsize::new(1)),
+        control: control,
+    };
     (tx, rx)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::sync::mpsc::unbounded;
+    use crate::sync::mpmc::unbounded;
     use std::collections::HashMap;
     use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError};
     use std::time::{Duration, Instant};
