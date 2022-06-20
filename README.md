@@ -1,6 +1,6 @@
 # conflation
 
-A set of concurrent channels in Rust that conflates submitted items via sender-supplied keys.
+A set of thread-safe channels in Rust that conflates submitted items via sender-supplied keys.
 
 ## Overview
 

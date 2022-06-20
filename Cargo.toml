@@ -11,5 +11,9 @@ parking_lot = "0.12.1"
 criterion = "0.3.5"
 
 [[bench]]
-name = "sync"
+name = "sync_compare"
+harness = false
+
+[[bench]]
+name = "sync_stress"
 harness = false
