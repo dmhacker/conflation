@@ -1,4 +1,4 @@
-use conflation::sync::mpmc::unbounded;
+use conflation::unbounded;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::sync::mpsc::channel;
 use std::thread;

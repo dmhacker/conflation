@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod sync_tests {
-    use conflation::sync::mpmc::unbounded;
+    use conflation::unbounded;
     use std::collections::HashMap;
     use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError};
     use std::thread;

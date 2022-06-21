@@ -25,7 +25,7 @@ only that a key is required to be specified upon submission. The key and value a
 returned by the receiver.
 
 ```rust
-use conflation::sync::mpmc::unbounded;
+use conflation::unbounded;
 
 let (tx, rx) = bounded();
 // Both messages are tagged with key = 1
@@ -44,4 +44,4 @@ with the same key can potentially be conflated in transit.
 ## Planned Additions
 
 * Support for asynchronous unbounded channels
-* Support for asynchronous bounded channels
+* Support for bounded channels
