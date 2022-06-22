@@ -99,11 +99,6 @@ where
                 }
                 SignallerResult::Disconnected => return Err(RecvError),
             }
-            match self.try_recv() {
-                Ok(data) => return Ok(data),
-                Err(TryRecvError::Disconnected) => return Err(RecvError),
-                Err(TryRecvError::Empty) => (),
-            }
         }
     }
 
@@ -125,11 +120,6 @@ where
                     }
                 }
                 SignallerResult::Disconnected => return Err(RecvTimeoutError::Disconnected),
-            }
-            match self.try_recv() {
-                Ok(data) => return Ok(data),
-                Err(TryRecvError::Disconnected) => return Err(RecvTimeoutError::Disconnected),
-                Err(TryRecvError::Empty) => (),
             }
         }
     }
@@ -156,9 +146,6 @@ where
 
     fn try_install_signaller(&self) -> SignallerResult<K, V> {
         let waiter = Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new()));
-        let signaller = Signaller {
-            waiter: waiter.clone(),
-        };
         let mut control_guard = self.control.lock();
         if let Some(head) = control_guard.queue.pop_front() {
             return SignallerResult::Data(head);
@@ -166,10 +153,13 @@ where
             if control_guard.disconnected {
                 return SignallerResult::Disconnected;
             }
-            control_guard
-                .consumers
-                .push_back((DEFAULT_TOKEN, Signaller { waiter: waiter }));
-            SignallerResult::Blocked(signaller)
+            control_guard.consumers.push_back((
+                DEFAULT_TOKEN,
+                Signaller {
+                    waiter: waiter.clone(),
+                },
+            ));
+            SignallerResult::Blocked(Signaller { waiter: waiter })
         }
     }
 }
