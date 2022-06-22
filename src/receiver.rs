@@ -15,7 +15,7 @@ pub struct Receiver<K, V> {
 
 impl<K, V> Drop for Receiver<K, V> {
     fn drop(&mut self) {
-        let remaining = self.refcount.fetch_sub(1, Ordering::SeqCst) - 1;
+        let remaining = self.refcount.fetch_sub(1, Ordering::Relaxed) - 1;
         if remaining == 0 {
             self.control.lock().disconnected = true;
         }
@@ -24,7 +24,7 @@ impl<K, V> Drop for Receiver<K, V> {
 
 impl<K, V> Clone for Receiver<K, V> {
     fn clone(&self) -> Receiver<K, V> {
-        self.refcount.fetch_add(1, Ordering::SeqCst);
+        self.refcount.fetch_add(1, Ordering::Relaxed);
         Receiver {
             refcount: self.refcount.clone(),
             control: self.control.clone(),
@@ -79,64 +79,58 @@ where
 {
     pub fn try_recv(&self) -> Result<(K, V), TryRecvError> {
         let mut control_guard = self.control.lock();
-        if control_guard.unreserved_count == 0 {
-            return if control_guard.disconnected {
-                Err(TryRecvError::Disconnected)
-            } else {
-                Err(TryRecvError::Empty)
-            };
-        }
-        match control_guard.queue.pop_front() {
-            Some(head) => {
-                control_guard.unreserved_count -= 1;
-                Ok(head)
-            }
-            None => {
-                if control_guard.disconnected {
-                    Err(TryRecvError::Disconnected)
-                } else {
-                    panic!("queue was empty but reported unreserved entries");
-                }
-            }
+        match (control_guard.queue.pop_front(), control_guard.disconnected) {
+            (Some(data), _) => Ok(data),
+            (None, true) => Err(TryRecvError::Disconnected),
+            (None, false) => Err(TryRecvError::Empty),
         }
     }
 
     pub fn recv(&self) -> Result<(K, V), RecvError> {
-        match self.try_install_signaller() {
-            SignallerResult::Data(data) => return Ok(data),
-            SignallerResult::Blocked(signaller) => {
-                signaller.wait(|tokens| {
-                    if tokens.len() == 0 || tokens[0] != DEFAULT_TOKEN {
-                        panic!("signaller corrupted: expected token from sender")
-                    }
-                });
+        loop {
+            match self.try_install_signaller() {
+                SignallerResult::Data(data) => return Ok(data),
+                SignallerResult::Blocked(signaller) => {
+                    signaller.wait(|tokens| {
+                        if tokens.len() == 0 || tokens[0] != DEFAULT_TOKEN {
+                            panic!("signaller corrupted: expected token from sender")
+                        }
+                    });
+                }
+                SignallerResult::Disconnected => return Err(RecvError),
             }
-            SignallerResult::Disconnected => return Err(RecvError),
+            match self.try_recv() {
+                Ok(data) => return Ok(data),
+                Err(TryRecvError::Disconnected) => return Err(RecvError),
+                Err(TryRecvError::Empty) => (),
+            }
         }
-        self.try_recv_reserved()
     }
 
     pub fn recv_deadline(&self, deadline: Instant) -> Result<(K, V), RecvTimeoutError> {
-        match self.try_install_signaller() {
-            SignallerResult::Data(data) => return Ok(data),
-            SignallerResult::Blocked(signaller) => {
-                if signaller.wait_deadline(deadline, |timeout_result, tokens| {
-                    if timeout_result.timed_out() {
-                        return true;
+        loop {
+            match self.try_install_signaller() {
+                SignallerResult::Data(data) => return Ok(data),
+                SignallerResult::Blocked(signaller) => {
+                    if signaller.wait_deadline(deadline, |timeout_result, tokens| {
+                        if timeout_result.timed_out() {
+                            return true;
+                        }
+                        if tokens.len() == 0 || tokens[0] != DEFAULT_TOKEN {
+                            panic!("signaller corrupted: expected token from sender")
+                        }
+                        false
+                    }) {
+                        return Err(RecvTimeoutError::Timeout);
                     }
-                    if tokens.len() == 0 || tokens[0] != DEFAULT_TOKEN {
-                        panic!("signaller corrupted: expected token from sender")
-                    }
-                    false
-                }) {
-                    return Err(RecvTimeoutError::Timeout);
                 }
+                SignallerResult::Disconnected => return Err(RecvTimeoutError::Disconnected),
             }
-            SignallerResult::Disconnected => return Err(RecvTimeoutError::Disconnected),
-        }
-        match self.try_recv_reserved() {
-            Ok(data) => return Ok(data),
-            Err(RecvError) => return Err(RecvTimeoutError::Disconnected),
+            match self.try_recv() {
+                Ok(data) => return Ok(data),
+                Err(TryRecvError::Disconnected) => return Err(RecvTimeoutError::Disconnected),
+                Err(TryRecvError::Empty) => (),
+            }
         }
     }
 
@@ -166,12 +160,8 @@ where
             waiter: waiter.clone(),
         };
         let mut control_guard = self.control.lock();
-        if control_guard.unreserved_count > 0 {
-            if let Some(head) = control_guard.queue.pop_front() {
-                control_guard.unreserved_count -= 1;
-                return SignallerResult::Data(head);
-            }
-            panic!("queue was empty but reported unreserved entries");
+        if let Some(head) = control_guard.queue.pop_front() {
+            return SignallerResult::Data(head);
         } else {
             if control_guard.disconnected {
                 return SignallerResult::Disconnected;
@@ -181,16 +171,5 @@ where
                 .push_back((DEFAULT_TOKEN, Signaller { waiter: waiter }));
             SignallerResult::Blocked(signaller)
         }
-    }
-
-    fn try_recv_reserved(&self) -> Result<(K, V), RecvError> {
-        let mut control_guard = self.control.lock();
-        if let Some(head) = control_guard.queue.pop_front() {
-            return Ok(head);
-        }
-        if control_guard.disconnected {
-            return Err(RecvError);
-        }
-        panic!("receiver woke up to empty queue");
     }
 }

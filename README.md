@@ -27,7 +27,7 @@ returned by the receiver.
 ```rust
 use conflation::unbounded;
 
-let (tx, rx) = bounded();
+let (tx, rx) = unbounded();
 // Both messages are tagged with key = 1
 let tx_result1 = tx.send(1, "foo".to_owned()).unwrap();
 let tx_result2 = tx.send(1, "bar".to_owned()).unwrap();

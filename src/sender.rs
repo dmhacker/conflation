@@ -13,7 +13,7 @@ pub struct Sender<K, V> {
 
 impl<K, V> Drop for Sender<K, V> {
     fn drop(&mut self) {
-        let remaining = self.refcount.fetch_sub(1, Ordering::SeqCst) - 1;
+        let remaining = self.refcount.fetch_sub(1, Ordering::Relaxed) - 1;
         if remaining == 0 {
             let mut control_guard = self.control.lock();
             // Receivers could have already disconnected
@@ -34,7 +34,7 @@ impl<K, V> Drop for Sender<K, V> {
 
 impl<K, V> Clone for Sender<K, V> {
     fn clone(&self) -> Sender<K, V> {
-        self.refcount.fetch_add(1, Ordering::SeqCst);
+        self.refcount.fetch_add(1, Ordering::Relaxed);
         Sender {
             refcount: self.refcount.clone(),
             control: self.control.clone(),
@@ -52,12 +52,9 @@ where
         if control_guard.disconnected {
             return Err(SendError((key, value)));
         }
-        if control_guard.queue.insert(key, value).is_none() {
-            control_guard.unreserved_count += 1;
-            if let Some((token, signaller)) = control_guard.consumers.pop_back() {
-                control_guard.unreserved_count -= 1;
-                signaller.signal(token);
-            }
+        control_guard.queue.insert(key, value);
+        if let Some((token, signaller)) = control_guard.consumers.pop_back() {
+            signaller.signal(token);
         }
         Ok(())
     }

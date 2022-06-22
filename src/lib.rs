@@ -24,7 +24,6 @@ where
     let control = Arc::new(Mutex::new(ControlBlock {
         queue: LinkedHashMap::new(),
         disconnected: false,
-        unreserved_count: 0,
         consumers: VecDeque::new(),
     }));
     let tx = Sender {
@@ -37,4 +36,3 @@ where
     };
     (tx, rx)
 }
-
