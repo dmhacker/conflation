@@ -60,7 +60,7 @@ pub(super) struct AsyncSignaller {
 
 impl Signaller for AsyncSignaller {
     fn signal(&self, _token: i64) {
-        // TODO(dhacker1): move token into shared vector between signaller & future
+        // TODO(dmhacker): trim token out of signaller interface
         self.waker.wake_by_ref();
     }
 }

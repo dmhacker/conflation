@@ -85,6 +85,17 @@ where
     type Output = Result<(K, V), RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // TODO(dmhacker): approach needs to be adjusted a little bit more.
+        // Future can be dropped at any time, so if it is woken
+        // up, it is not guaranteed to poll the channel at least once. This means
+        // a sending thread could wake an async receiving task, that task can
+        // drop, and another consumer may be left waiting even when there is
+        // data in the channel. To resolve, if the future installs a signaller
+        // into the channel, it should perform cleanup in drop() to (1) potentially
+        // unregister its signaller/waker from the channel if it was not notified
+        // and (2) if it was notified by sender but hasn't actually received data
+        // because the future was never polled by the executor, then the future
+        // should signal the next consumer.
         let mut control_guard = self.receiver.control.lock();
         match (control_guard.queue.pop_front(), control_guard.disconnected) {
             (Some(data), _) => Poll::Ready(Ok(data)),
