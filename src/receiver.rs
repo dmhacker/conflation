@@ -86,18 +86,18 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut control_guard = self.receiver.control.lock();
-        if let Some(head) = control_guard.queue.pop_front() {
-            Poll::Ready(Ok(head))
-        } else if control_guard.disconnected {
-            Poll::Ready(Err(RecvError))
-        } else {
-            control_guard.consumers.push_back((
-                DEFAULT_TOKEN,
-                AnySignaller::Async(AsyncSignaller {
-                    waker: cx.waker().clone(),
-                }),
-            ));
-            Poll::Pending
+        match (control_guard.queue.pop_front(), control_guard.disconnected) {
+            (Some(data), _) => Poll::Ready(Ok(data)),
+            (None, true) => Poll::Ready(Err(RecvError)),
+            (None, false) => {
+                control_guard.consumers.push_back((
+                    DEFAULT_TOKEN,
+                    AnySignaller::Async(AsyncSignaller {
+                        waker: cx.waker().clone(),
+                    }),
+                ));
+                Poll::Pending
+            }
         }
     }
 }
@@ -121,19 +121,18 @@ where
     fn try_install_signaller(&self) -> SignallerResult<K, V, SyncSignaller> {
         let waiter = Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new()));
         let mut control_guard = self.control.lock();
-        if let Some(head) = control_guard.queue.pop_front() {
-            return SignallerResult::Data(head);
-        } else {
-            if control_guard.disconnected {
-                return SignallerResult::Disconnected;
+        match (control_guard.queue.pop_front(), control_guard.disconnected) {
+            (Some(data), _) => SignallerResult::Data(data),
+            (None, true) => SignallerResult::Disconnected,
+            (None, false) => {
+                control_guard.consumers.push_back((
+                    DEFAULT_TOKEN,
+                    AnySignaller::Sync(SyncSignaller {
+                        waiter: waiter.clone(),
+                    }),
+                ));
+                SignallerResult::Blocked(SyncSignaller { waiter: waiter })
             }
-            control_guard.consumers.push_back((
-                DEFAULT_TOKEN,
-                AnySignaller::Sync(SyncSignaller {
-                    waiter: waiter.clone(),
-                }),
-            ));
-            SignallerResult::Blocked(SyncSignaller { waiter: waiter })
         }
     }
 
