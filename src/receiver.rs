@@ -1,12 +1,15 @@
 use parking_lot::{Condvar, Mutex};
+use std::future::Future;
 use std::hash::Hash;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvError, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use super::control::ControlBlock;
-use super::signal::{AnySignaller, SignallerResult, SyncSignaller};
+use super::signal::{AnySignaller, AsyncSignaller, SignallerResult, SyncSignaller};
 
 pub struct Receiver<K, V> {
     pub(super) refcount: Arc<AtomicUsize>,
@@ -66,6 +69,35 @@ where
         match self.receiver.try_recv() {
             Ok(head) => Some(head),
             Err(_) => None,
+        }
+    }
+}
+
+pub struct RecvFuture<'a, K, V> {
+    receiver: &'a Receiver<K, V>,
+}
+
+impl<'a, K, V> Future for RecvFuture<'a, K, V>
+where
+    K: Hash,
+    K: Eq,
+{
+    type Output = Result<(K, V), RecvError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut control_guard = self.receiver.control.lock();
+        if let Some(head) = control_guard.queue.pop_front() {
+            Poll::Ready(Ok(head))
+        } else if control_guard.disconnected {
+            Poll::Ready(Err(RecvError))
+        } else {
+            control_guard.consumers.push_back((
+                DEFAULT_TOKEN,
+                AnySignaller::Async(AsyncSignaller {
+                    waker: cx.waker().clone(),
+                }),
+            ));
+            Poll::Pending
         }
     }
 }
@@ -145,6 +177,10 @@ where
 
     pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
         self.recv_deadline(Instant::now() + timeout)
+    }
+
+    pub async fn recv_async(&self) -> RecvFuture<'_, K, V> {
+        RecvFuture { receiver: self }
     }
 
     pub fn iter(&self) -> Iter<'_, K, V> {

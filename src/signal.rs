@@ -1,5 +1,6 @@
 use parking_lot::{Condvar, Mutex};
 use std::sync::Arc;
+use std::task::Waker;
 use std::time::Instant;
 
 pub(super) struct SignallerTimedOut(bool);
@@ -53,10 +54,15 @@ impl SyncSignaller {
     }
 }
 
-pub(super) struct AsyncSignaller {}
+pub(super) struct AsyncSignaller {
+    pub(super) waker: Waker,
+}
 
 impl Signaller for AsyncSignaller {
-    fn signal(&self, _token: i64) {}
+    fn signal(&self, _token: i64) {
+        // TODO(dhacker1): move token into shared vector between signaller & future
+        self.waker.wake_by_ref();
+    }
 }
 
 pub(super) enum AnySignaller {
