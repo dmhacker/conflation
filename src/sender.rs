@@ -5,6 +5,7 @@ use std::sync::mpsc::SendError;
 use std::sync::Arc;
 
 use super::control::ControlBlock;
+use super::signal::Signaller;
 
 pub struct Sender<K, V> {
     pub(super) refcount: Arc<AtomicUsize>,

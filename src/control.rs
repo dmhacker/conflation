@@ -1,10 +1,10 @@
 use linked_hash_map::LinkedHashMap;
 use std::collections::VecDeque;
 
-use super::signal::Signaller;
+use super::signal::AnySignaller;
 
 pub(super) struct ControlBlock<K, V> {
     pub(super) queue: LinkedHashMap<K, V>,
     pub(super) disconnected: bool,
-    pub(super) consumers: VecDeque<(i64, Signaller)>,
+    pub(super) consumers: VecDeque<(i64, AnySignaller)>,
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::control::ControlBlock;
-use super::signal::{Signaller, SignallerResult};
+use super::signal::{AnySignaller, SignallerResult, SyncSignaller};
 
 pub struct Receiver<K, V> {
     pub(super) refcount: Arc<AtomicUsize>,
@@ -86,6 +86,25 @@ where
         }
     }
 
+    fn try_install_signaller(&self) -> SignallerResult<K, V, SyncSignaller> {
+        let waiter = Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new()));
+        let mut control_guard = self.control.lock();
+        if let Some(head) = control_guard.queue.pop_front() {
+            return SignallerResult::Data(head);
+        } else {
+            if control_guard.disconnected {
+                return SignallerResult::Disconnected;
+            }
+            control_guard.consumers.push_back((
+                DEFAULT_TOKEN,
+                AnySignaller::Sync(SyncSignaller {
+                    waiter: waiter.clone(),
+                }),
+            ));
+            SignallerResult::Blocked(SyncSignaller { waiter: waiter })
+        }
+    }
+
     pub fn recv(&self) -> Result<(K, V), RecvError> {
         loop {
             match self.try_install_signaller() {
@@ -142,24 +161,5 @@ where
 
     pub fn is_disconnected(&self) -> bool {
         self.control.lock().disconnected
-    }
-
-    fn try_install_signaller(&self) -> SignallerResult<K, V> {
-        let waiter = Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new()));
-        let mut control_guard = self.control.lock();
-        if let Some(head) = control_guard.queue.pop_front() {
-            return SignallerResult::Data(head);
-        } else {
-            if control_guard.disconnected {
-                return SignallerResult::Disconnected;
-            }
-            control_guard.consumers.push_back((
-                DEFAULT_TOKEN,
-                Signaller {
-                    waiter: waiter.clone(),
-                },
-            ));
-            SignallerResult::Blocked(Signaller { waiter: waiter })
-        }
     }
 }
