@@ -40,8 +40,3 @@ Unlike `std::sync::mpsc` channels, `conflation::sync::mpmc` channels are
 multi-producer and multi-consumer. If multiple receivers are used, then this channel
 will function identically to a work-sharing queue, only that work submitted
 with the same key can potentially be conflated in transit.
-
-## Planned Additions
-
-* Support for asynchronous unbounded channels
-* Support for bounded channels

@@ -25,8 +25,8 @@ impl<K, V> Drop for Sender<K, V> {
                 // currently in the queue. Upon disconnect, no more items
                 // can be added to the queue, so all of these consumers
                 // will receive a disconnect upon polling.
-                for (token, signaller) in control_guard.consumers.drain(..) {
-                    signaller.signal(token);
+                for signaller in control_guard.consumers.drain(..) {
+                    signaller.signal();
                 }
             }
         }
@@ -54,8 +54,8 @@ where
             return Err(SendError((key, value)));
         }
         control_guard.queue.insert(key, value);
-        if let Some((token, signaller)) = control_guard.consumers.pop_back() {
-            signaller.signal(token);
+        if let Some(signaller) = control_guard.consumers.pop_back() {
+            signaller.signal();
         }
         Ok(())
     }

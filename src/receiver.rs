@@ -101,19 +101,16 @@ where
             (Some(data), _) => Poll::Ready(Ok(data)),
             (None, true) => Poll::Ready(Err(RecvError)),
             (None, false) => {
-                control_guard.consumers.push_back((
-                    DEFAULT_TOKEN,
-                    AnySignaller::Async(AsyncSignaller {
+                control_guard
+                    .consumers
+                    .push_back(AnySignaller::Async(AsyncSignaller {
                         waker: cx.waker().clone(),
-                    }),
-                ));
+                    }));
                 Poll::Pending
             }
         }
     }
 }
-
-const DEFAULT_TOKEN: i64 = 0;
 
 impl<K, V> Receiver<K, V>
 where
@@ -130,18 +127,17 @@ where
     }
 
     fn try_install_signaller(&self) -> SignallerResult<K, V, SyncSignaller> {
-        let waiter = Arc::new((Mutex::new(Vec::with_capacity(1)), Condvar::new()));
+        let waiter = Arc::new((Mutex::new(false), Condvar::new()));
         let mut control_guard = self.control.lock();
         match (control_guard.queue.pop_front(), control_guard.disconnected) {
             (Some(data), _) => SignallerResult::Data(data),
             (None, true) => SignallerResult::Disconnected,
             (None, false) => {
-                control_guard.consumers.push_back((
-                    DEFAULT_TOKEN,
-                    AnySignaller::Sync(SyncSignaller {
+                control_guard
+                    .consumers
+                    .push_back(AnySignaller::Sync(SyncSignaller {
                         waiter: waiter.clone(),
-                    }),
-                ));
+                    }));
                 SignallerResult::Blocked(SyncSignaller { waiter: waiter })
             }
         }
@@ -152,11 +148,7 @@ where
             match self.try_install_signaller() {
                 SignallerResult::Data(data) => return Ok(data),
                 SignallerResult::Blocked(signaller) => {
-                    signaller.wait(|tokens| {
-                        if tokens.len() == 0 || tokens[0] != DEFAULT_TOKEN {
-                            panic!("signaller corrupted: expected token from sender")
-                        }
-                    });
+                    signaller.wait();
                 }
                 SignallerResult::Disconnected => return Err(RecvError),
             }
@@ -168,15 +160,7 @@ where
             match self.try_install_signaller() {
                 SignallerResult::Data(data) => return Ok(data),
                 SignallerResult::Blocked(signaller) => {
-                    if signaller.wait_deadline(deadline, |timeout_result, tokens| {
-                        if timeout_result.timed_out() {
-                            return true;
-                        }
-                        if tokens.len() == 0 || tokens[0] != DEFAULT_TOKEN {
-                            panic!("signaller corrupted: expected token from sender")
-                        }
-                        false
-                    }) {
+                    if signaller.wait_deadline(deadline).timed_out() {
                         return Err(RecvTimeoutError::Timeout);
                     }
                 }

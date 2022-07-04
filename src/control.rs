@@ -6,5 +6,5 @@ use super::signal::AnySignaller;
 pub(super) struct ControlBlock<K, V> {
     pub(super) queue: LinkedHashMap<K, V>,
     pub(super) disconnected: bool,
-    pub(super) consumers: VecDeque<(i64, AnySignaller)>,
+    pub(super) consumers: VecDeque<AnySignaller>,
 }
