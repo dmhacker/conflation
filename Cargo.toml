@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 linked-hash-map = "0.5.4"
 parking_lot = "0.12.1"
+pin-project = "1.0.11"
 
 [dev-dependencies]
 criterion = "0.3.5"

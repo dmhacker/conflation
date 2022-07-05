@@ -1,15 +1,16 @@
 use parking_lot::{Condvar, Mutex};
+use pin_project::{pin_project, pinned_drop};
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvError, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use super::control::ControlBlock;
-use super::signal::{AnySignaller, AsyncSignaller, SignallerResult, SyncSignaller};
+use super::signal::{AnySignaller, AsyncSignaller, Signaller, SignallerResult, SyncSignaller};
 
 pub struct Receiver<K, V> {
     pub(super) refcount: Arc<AtomicUsize>,
@@ -73,8 +74,35 @@ where
     }
 }
 
+#[pin_project(PinnedDrop)]
 pub struct RecvFuture<'a, K, V> {
     receiver: &'a Receiver<K, V>,
+    polled: bool,
+    woken: Arc<AtomicBool>,
+    signaller: Option<*const AnySignaller>,
+    done: bool,
+}
+
+#[pinned_drop]
+impl<'a, K, V> PinnedDrop for RecvFuture<'a, K, V> {
+    fn drop(self: Pin<&mut Self>) {
+        let this = self.project();
+        if !*this.polled || *this.done {
+            return;
+        }
+        let mut control_guard = this.receiver.control.lock();
+        if this.woken.load(Ordering::Relaxed) {
+            if let Some(signaller) = control_guard.consumers.pop_back() {
+                signaller.signal();
+            }
+        } else {
+            let this_signaller =
+                this.signaller.expect("signaller was not set") as *const AnySignaller;
+            control_guard
+                .consumers
+                .retain(|signaller| &**signaller as *const AnySignaller != this_signaller)
+        }
+    }
 }
 
 impl<'a, K, V> Future for RecvFuture<'a, K, V>
@@ -85,27 +113,33 @@ where
     type Output = Result<(K, V), RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // TODO(dmhacker): approach needs to be adjusted a little bit more.
-        // Future can be dropped at any time, so if it is woken
-        // up, it is not guaranteed to poll the channel at least once. This means
-        // a sending thread could wake an async receiving task, that task can
-        // drop, and another consumer may be left waiting even when there is
-        // data in the channel. To resolve, if the future installs a signaller
-        // into the channel, it should perform cleanup in drop() to (1) potentially
-        // unregister its signaller/waker from the channel if it was not notified
-        // and (2) if it was notified by sender but hasn't actually received data
-        // because the future was never polled by the executor, then the future
-        // should signal the next consumer.
-        let mut control_guard = self.receiver.control.lock();
+        let this = self.project();
+        *this.polled = true;
+        let mut control_guard = this.receiver.control.lock();
         match (control_guard.queue.pop_front(), control_guard.disconnected) {
-            (Some(data), _) => Poll::Ready(Ok(data)),
-            (None, true) => Poll::Ready(Err(RecvError)),
+            (Some(data), _) => {
+                *this.done = true;
+                Poll::Ready(Ok(data))
+            }
+            (None, true) => {
+                *this.done = true;
+                Poll::Ready(Err(RecvError))
+            }
             (None, false) => {
+                this.woken.store(false, Ordering::Relaxed);
                 control_guard
                     .consumers
-                    .push_back(AnySignaller::Async(AsyncSignaller {
+                    .push_back(Box::new(AnySignaller::Async(AsyncSignaller {
                         waker: cx.waker().clone(),
-                    }));
+                        woken: this.woken.clone(),
+                    })));
+                *this.signaller = Some(
+                    &**control_guard
+                        .consumers
+                        .back()
+                        .expect("signaller was not added")
+                        as *const AnySignaller,
+                );
                 Poll::Pending
             }
         }
@@ -135,9 +169,9 @@ where
             (None, false) => {
                 control_guard
                     .consumers
-                    .push_back(AnySignaller::Sync(SyncSignaller {
+                    .push_back(Box::new(AnySignaller::Sync(SyncSignaller {
                         waiter: waiter.clone(),
-                    }));
+                    })));
                 SignallerResult::Blocked(SyncSignaller { waiter: waiter })
             }
         }
@@ -174,7 +208,13 @@ where
     }
 
     pub async fn recv_async(&self) -> RecvFuture<'_, K, V> {
-        RecvFuture { receiver: self }
+        RecvFuture {
+            receiver: self,
+            polled: false,
+            woken: Arc::new(AtomicBool::new(false)),
+            signaller: None,
+            done: false,
+        }
     }
 
     pub fn iter(&self) -> Iter<'_, K, V> {

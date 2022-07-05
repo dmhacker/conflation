@@ -1,4 +1,5 @@
 use parking_lot::{Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::Waker;
 use std::time::Instant;
@@ -45,11 +46,13 @@ impl SyncSignaller {
 
 pub(super) struct AsyncSignaller {
     pub(super) waker: Waker,
+    pub(super) woken: Arc<AtomicBool>,
 }
 
 impl Signaller for AsyncSignaller {
     fn signal(&self) {
         self.waker.wake_by_ref();
+        self.woken.store(true, Ordering::Relaxed);
     }
 }
 
