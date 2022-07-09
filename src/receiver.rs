@@ -79,7 +79,6 @@ pub struct RecvFuture<'a, K, V> {
     receiver: &'a Receiver<K, V>,
     polled: bool,
     woken: Arc<AtomicBool>,
-    signaller: Option<*const AnySignaller>,
     done: bool,
 }
 
@@ -96,11 +95,12 @@ impl<'a, K, V> PinnedDrop for RecvFuture<'a, K, V> {
                 signaller.signal();
             }
         } else {
-            let this_signaller =
-                this.signaller.expect("signaller was not set") as *const AnySignaller;
-            control_guard
-                .consumers
-                .retain(|signaller| &**signaller as *const AnySignaller != this_signaller)
+            control_guard.consumers.retain(|signaller| match signaller {
+                AnySignaller::Async(async_signaller) => {
+                    Arc::ptr_eq(&this.woken, &async_signaller.woken)
+                }
+                _ => false,
+            })
         }
     }
 }
@@ -129,17 +129,10 @@ where
                 this.woken.store(false, Ordering::Relaxed);
                 control_guard
                     .consumers
-                    .push_back(Box::new(AnySignaller::Async(AsyncSignaller {
+                    .push_back(AnySignaller::Async(AsyncSignaller {
                         waker: cx.waker().clone(),
                         woken: this.woken.clone(),
-                    })));
-                *this.signaller = Some(
-                    &**control_guard
-                        .consumers
-                        .back()
-                        .expect("signaller was not added")
-                        as *const AnySignaller,
-                );
+                    }));
                 Poll::Pending
             }
         }
@@ -169,9 +162,9 @@ where
             (None, false) => {
                 control_guard
                     .consumers
-                    .push_back(Box::new(AnySignaller::Sync(SyncSignaller {
+                    .push_back(AnySignaller::Sync(SyncSignaller {
                         waiter: waiter.clone(),
-                    })));
+                    }));
                 SignallerResult::Blocked(SyncSignaller { waiter: waiter })
             }
         }
@@ -212,7 +205,6 @@ where
             receiver: self,
             polled: false,
             woken: Arc::new(AtomicBool::new(false)),
-            signaller: None,
             done: false,
         }
     }
