@@ -75,9 +75,8 @@ where
 }
 
 enum RecvFutureState {
-    Uninstalled,
-    Installed(Arc<AtomicBool>),
-    Done,
+    Waiting(Arc<AtomicBool>),
+    Completed,
 }
 
 #[pin_project(PinnedDrop)]
@@ -90,7 +89,7 @@ pub struct RecvFuture<'a, K, V> {
 impl<'a, K, V> PinnedDrop for RecvFuture<'a, K, V> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
-        if let RecvFutureState::Installed(woken) = this.state {
+        if let RecvFutureState::Waiting(woken) = this.state {
             let mut control_guard = this.receiver.control.lock();
             if woken.load(Ordering::Relaxed) {
                 if let Some(signaller) = control_guard.consumers.pop_back() {
@@ -99,10 +98,10 @@ impl<'a, K, V> PinnedDrop for RecvFuture<'a, K, V> {
             } else {
                 control_guard.consumers.retain(|signaller| match signaller {
                     AnySignaller::Async(async_signaller) => {
-                        Arc::ptr_eq(&woken, &async_signaller.woken)
+                        !Arc::ptr_eq(&woken, &async_signaller.woken)
                     }
-                    _ => false,
-                })
+                    _ => true,
+                });
             }
         }
     }
@@ -117,24 +116,21 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        if let RecvFutureState::Done = this.state {
+        if let RecvFutureState::Completed = this.state {
             panic!("completed future was polled")
         }
         let mut control_guard = this.receiver.control.lock();
         match (control_guard.queue.pop_front(), control_guard.disconnected) {
             (Some(data), _) => {
-                *this.state = RecvFutureState::Done;
+                *this.state = RecvFutureState::Completed;
                 Poll::Ready(Ok(data))
             }
             (None, true) => {
-                *this.state = RecvFutureState::Done;
+                *this.state = RecvFutureState::Completed;
                 Poll::Ready(Err(RecvError))
             }
             (None, false) => {
-                if let RecvFutureState::Uninstalled = this.state {
-                    *this.state = RecvFutureState::Installed(Arc::new(AtomicBool::new(false)));
-                }
-                if let RecvFutureState::Installed(woken) = this.state {
+                if let RecvFutureState::Waiting(woken) = this.state {
                     woken.store(false, Ordering::Relaxed);
                     control_guard
                         .consumers
@@ -144,7 +140,7 @@ where
                         }));
                     Poll::Pending
                 } else {
-                    panic!("expected future to be in installed state")
+                    panic!("expected future to be in waiting state")
                 }
             }
         }
@@ -212,10 +208,10 @@ where
         self.recv_deadline(Instant::now() + timeout)
     }
 
-    pub async fn recv_async(&self) -> RecvFuture<'_, K, V> {
+    pub fn recv_async(&self) -> RecvFuture<'_, K, V> {
         RecvFuture {
             receiver: self,
-            state: RecvFutureState::Uninstalled,
+            state: RecvFutureState::Waiting(Arc::new(AtomicBool::new(false))),
         }
     }
 

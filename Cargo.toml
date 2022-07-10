@@ -10,6 +10,7 @@ pin-project = "1.0.11"
 
 [dev-dependencies]
 criterion = "0.3.5"
+futures-test = "0.3.21"
 
 [[bench]]
 name = "sync_compare"
