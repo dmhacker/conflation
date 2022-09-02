@@ -52,9 +52,9 @@ pub use self::sender::*;
 /// 
 /// The subsequent [`Sender`] and [`Receiver`] that are returned
 /// are thread-safe, cloneable, and may be moved between threads
-/// freely. They are connected, in that sending via the [`Sender`]
+/// freely. They are connected in that sending via the [`Sender`]
 /// will result in the values being accessible through the 
-/// [`Receiver`] except in the event of conflation.
+/// corresponding [`Receiver`], except in the event of conflation.
 pub fn unbounded<K, V>() -> (Sender<K, V>, Receiver<K, V>)
 where
     K: Eq,

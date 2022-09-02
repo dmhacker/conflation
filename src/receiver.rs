@@ -84,6 +84,8 @@ enum RecvFutureState {
     Completed,
 }
 
+/// Future that is resolved into a received messsage from
+/// a conflating channel.
 #[pin_project(PinnedDrop)]
 pub struct RecvFuture<'a, K, V> {
     receiver: &'a Receiver<K, V>,
@@ -157,6 +159,13 @@ where
     K: Eq,
     K: Hash,
 {
+    /// Attempt to receive a message from the channel.
+    /// 
+    /// If the channel is closed by lack of senders and no message is present, 
+    /// returns `TryRecvError::Disconnected`.
+    /// 
+    /// If the channel is still open and no message is present, returns 
+    /// `TryRecvError::Empty`.
     pub fn try_recv(&self) -> Result<(K, V), TryRecvError> {
         let mut control_guard = self.control.lock();
         match (control_guard.queue.pop_front(), control_guard.disconnected) {
@@ -183,6 +192,13 @@ where
         }
     }
 
+    /// Attempts to receive a message from the channel in a blocking fashion.
+    /// 
+    /// If the channel is closed by lack of senders and no message is present, 
+    /// returns `TryRecvError::Disconnected`.
+    /// 
+    /// If the channel is open and no message is present, this method will
+    /// block until a new message is submitted to the channel.
     pub fn recv(&self) -> Result<(K, V), RecvError> {
         loop {
             match self.try_install_signaller() {
@@ -195,6 +211,11 @@ where
         }
     }
 
+    /// Attempts to receive a message from the channel in a blocking fashion with a deadline.
+    ///
+    /// The semantics are the same as [`recv`], only that if the deadline is reached
+    /// before any message is sent or all senders are dropped, `RecvTimeoutError::Timeout` 
+    /// will be returned.
     pub fn recv_deadline(&self, deadline: Instant) -> Result<(K, V), RecvTimeoutError> {
         loop {
             match self.try_install_signaller() {
@@ -209,10 +230,16 @@ where
         }
     }
 
+    /// Attempts to receive a message from the channel in a blocking fashion with a timeout.
+    /// 
+    /// The semantics are the same as [`recv`], only that if the timeout is reached
+    /// before any message is sent or all senders are dropped, `RecvTimeoutError::Timeout` 
+    /// will be returned.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
         self.recv_deadline(Instant::now() + timeout)
     }
 
+    /// Returns a future that represents the asynchronous retrieval of a value from the channel.
     pub fn recv_async(&self) -> RecvFuture<'_, K, V> {
         RecvFuture {
             receiver: self,
@@ -220,18 +247,25 @@ where
         }
     }
 
+    /// Returns a blocking, synchronous iterator that continuously receives values from the channel.
     pub fn iter(&self) -> Iter<'_, K, V> {
         Iter { receiver: self }
     }
 
+    /// Returns a synchronous iterator that continuously receives values from the channel.
+    /// 
+    /// The iterator will not block if no values are present in the channel. Instead,
+    /// it will return `None`. 
     pub fn try_iter(&self) -> TryIter<'_, K, V> {
         TryIter { receiver: self }
     }
 
+    /// Returns the number of messages currently queued in the channel.
     pub fn len(&self) -> usize {
         self.control.lock().queue.len()
     }
 
+    /// Returns true if all senders or all receivers for this channel are dropped.
     pub fn is_disconnected(&self) -> bool {
         self.control.lock().disconnected
     }
