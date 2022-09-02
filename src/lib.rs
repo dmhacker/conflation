@@ -8,11 +8,13 @@
 //! key is unique and/or the channel's consumer(s) 
 //! are keeping up with the producer(s). Otherwise, if
 //! a producer submits a message with a duplicated key,
-//! the old message will be dropped, such that any
-//! subsequent consumer(s) will not be able to read it.
+//! the old message will be dropped and any subsequent
+//! consumer(s) will not be able to read it.
 //! 
 //! Messages will always be received in the order that
-//! they were submitted.
+//! they were submitted within the context of a single
+//! sender. Submission order across multiple senders
+//! is indeterminate.
 //!
 //! ## Example
 //!
