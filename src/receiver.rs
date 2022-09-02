@@ -12,6 +12,11 @@ use std::time::{Duration, Instant};
 use super::control::ControlBlock;
 use super::signal::{AnySignaller, AsyncSignaller, Signaller, SignallerResult, SyncSignaller};
 
+/// The receiving end of the channel.
+/// 
+/// Values obtained through the receiver are only accessible
+/// via one consumer. They are not broadcasted to multiple
+/// consumers.
 pub struct Receiver<K, V> {
     pub(super) refcount: Arc<AtomicUsize>,
     pub(super) control: Arc<Mutex<ControlBlock<K, V>>>,

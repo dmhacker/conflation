@@ -7,6 +7,11 @@ use std::sync::Arc;
 use super::control::ControlBlock;
 use super::signal::Signaller;
 
+/// The transmitting end of the channel.
+/// 
+/// Values submitted through the sender will be received by only one
+/// consumer, except in the event of conflation, in which case the
+/// message is dropped & no consumer receives it.
 pub struct Sender<K, V> {
     pub(super) refcount: Arc<AtomicUsize>,
     pub(super) control: Arc<Mutex<ControlBlock<K, V>>>,
@@ -48,6 +53,11 @@ where
     K: Eq,
     K: Hash,
 {
+    /// Attempts to send a message to an unbounded channel.
+    /// 
+    /// This will fail with [`SendError`] if all receivers have been disconnected.
+    /// 
+    /// As the channel is unbounded, this function will never block.
     pub fn send(&self, key: K, value: V) -> Result<(), SendError<(K, V)>> {
         let mut control_guard = self.control.lock();
         if control_guard.disconnected {
@@ -60,10 +70,12 @@ where
         Ok(())
     }
 
+    /// Returns the number of messages currently queued in the channel.
     pub fn len(&self) -> usize {
         self.control.lock().queue.len()
     }
 
+    /// Returns true if all senders or all receivers for this channel are dropped.
     pub fn is_disconnected(&self) -> bool {
         self.control.lock().disconnected
     }

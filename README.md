@@ -18,7 +18,7 @@ This generally makes the channel slower than its `std` equivalents for workloads
 many duplicate keys. Consider using this channel only when conflation is appropriate
 (e.g. to help with backpressure).
 
-## Synchronous Usage
+## Usage
 
 The semantics of these channels are identical to standard `Sender`s and `Receiver`s,
 only that a key is required to be specified upon submission. The key and value are
@@ -31,7 +31,7 @@ let (tx, rx) = unbounded();
 // Both messages are tagged with key = 1
 let tx_result1 = tx.send(1, "foo".to_owned()).unwrap();
 let tx_result2 = tx.send(1, "bar".to_owned()).unwrap();
-// The receiver will yield (1, "bar") as (1, "foo") was
+// The receiver will only yield (1, "bar") as (1, "foo") was
 // conflated by the producer.
 let (key, value) = rx.recv().unwrap();
 ```
