@@ -1,16 +1,16 @@
-//! A set of thread-safe channels in Rust that conflates 
+//! A set of thread-safe channels in Rust that conflates
 //! submitted items via sender-supplied keys.
-//! 
+//!
 //! ## Properties
-//! 
-//! These channels function identically to their standard, 
+//!
+//! These channels function identically to their standard,
 //! non-conflating counterparts if every submitted
-//! key is unique and/or the channel's consumer(s) 
+//! key is unique and/or the channel's consumer(s)
 //! are keeping up with the producer(s). Otherwise, if
 //! a producer submits a message with a duplicated key,
 //! the old message will be dropped and any subsequent
 //! consumer(s) will not be able to read it.
-//! 
+//!
 //! Messages will always be received in the order that
 //! they were submitted within the context of a single
 //! sender. Submission order across multiple senders
@@ -30,7 +30,6 @@
 //! let (key, value) = rx.recv().unwrap();
 //! ```
 
-use linked_hash_map::LinkedHashMap;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::hash::Hash;
@@ -41,7 +40,9 @@ mod control;
 mod signal;
 
 use self::control::ControlBlock;
+use self::queue::ConflatingQueue;
 
+pub mod queue;
 pub mod receiver;
 pub mod sender;
 
@@ -49,11 +50,11 @@ pub use self::receiver::*;
 pub use self::sender::*;
 
 /// Create a conflating channel with no maximum capacity.
-/// 
+///
 /// The subsequent [`Sender`] and [`Receiver`] that are returned
 /// are thread-safe, cloneable, and may be moved between threads
 /// freely. They are connected in that sending via the [`Sender`]
-/// will result in the values being accessible through the 
+/// will result in the values being accessible through the
 /// corresponding [`Receiver`], except in the event of conflation.
 pub fn unbounded<K, V>() -> (Sender<K, V>, Receiver<K, V>)
 where
@@ -61,7 +62,7 @@ where
     K: Hash,
 {
     let control = Arc::new(Mutex::new(ControlBlock {
-        queue: LinkedHashMap::new(),
+        queue: ConflatingQueue::new(),
         disconnected: false,
         consumers: VecDeque::new(),
     }));

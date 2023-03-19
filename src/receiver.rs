@@ -13,7 +13,7 @@ use super::control::ControlBlock;
 use super::signal::{AnySignaller, AsyncSignaller, Signaller, SignallerResult, SyncSignaller};
 
 /// The receiving end of the channel.
-/// 
+///
 /// Values obtained through the receiver are only accessible
 /// via one consumer. They are not broadcasted to multiple
 /// consumers.
@@ -160,11 +160,11 @@ where
     K: Hash,
 {
     /// Attempt to receive a message from the channel.
-    /// 
-    /// If the channel is closed by lack of senders and no message is present, 
+    ///
+    /// If the channel is closed by lack of senders and no message is present,
     /// returns `TryRecvError::Disconnected`.
-    /// 
-    /// If the channel is still open and no message is present, returns 
+    ///
+    /// If the channel is still open and no message is present, returns
     /// `TryRecvError::Empty`.
     pub fn try_recv(&self) -> Result<(K, V), TryRecvError> {
         let mut control_guard = self.control.lock();
@@ -193,10 +193,10 @@ where
     }
 
     /// Attempts to receive a message from the channel in a blocking fashion.
-    /// 
-    /// If the channel is closed by lack of senders and no message is present, 
+    ///
+    /// If the channel is closed by lack of senders and no message is present,
     /// returns `TryRecvError::Disconnected`.
-    /// 
+    ///
     /// If the channel is open and no message is present, this method will
     /// block until a new message is submitted to the channel.
     pub fn recv(&self) -> Result<(K, V), RecvError> {
@@ -214,7 +214,7 @@ where
     /// Attempts to receive a message from the channel in a blocking fashion with a deadline.
     ///
     /// The semantics are the same as [`recv`], only that if the deadline is reached
-    /// before any message is sent or all senders are dropped, `RecvTimeoutError::Timeout` 
+    /// before any message is sent or all senders are dropped, `RecvTimeoutError::Timeout`
     /// will be returned.
     pub fn recv_deadline(&self, deadline: Instant) -> Result<(K, V), RecvTimeoutError> {
         loop {
@@ -231,9 +231,9 @@ where
     }
 
     /// Attempts to receive a message from the channel in a blocking fashion with a timeout.
-    /// 
+    ///
     /// The semantics are the same as [`recv`], only that if the timeout is reached
-    /// before any message is sent or all senders are dropped, `RecvTimeoutError::Timeout` 
+    /// before any message is sent or all senders are dropped, `RecvTimeoutError::Timeout`
     /// will be returned.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<(K, V), RecvTimeoutError> {
         self.recv_deadline(Instant::now() + timeout)
@@ -253,9 +253,9 @@ where
     }
 
     /// Returns a synchronous iterator that continuously receives values from the channel.
-    /// 
+    ///
     /// The iterator will not block if no values are present in the channel. Instead,
-    /// it will return `None`. 
+    /// it will return `None`.
     pub fn try_iter(&self) -> TryIter<'_, K, V> {
         TryIter { receiver: self }
     }
