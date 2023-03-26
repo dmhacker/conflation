@@ -34,16 +34,16 @@ mod async_tests {
     // }
 
     #[pin_project]
-    struct PollOnceFuture<'a, K, V> {
-        future: RecvFuture<'a, K, V>,
+    struct PollOnceFuture<'a, 'b, K, V> {
+        future: RecvFuture<'a, 'b, K, V>,
     }
 
-    impl<'a, K, V> Future for PollOnceFuture<'a, K, V>
+    impl<'a, 'b, K, V> Future for PollOnceFuture<'a, 'b, K, V>
     where
         K: Hash,
         K: Eq,
     {
-        type Output = Poll<<RecvFuture<'a, K, V> as Future>::Output>;
+        type Output = Poll<<RecvFuture<'a, 'b, K, V> as Future>::Output>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let mut this = self.project();

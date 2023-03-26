@@ -31,6 +31,7 @@
 //! ```
 
 use parking_lot::Mutex;
+use queue::ConflatingQueue;
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::sync::atomic::AtomicUsize;
@@ -40,7 +41,7 @@ mod control;
 mod signal;
 
 use self::control::ControlBlock;
-use self::queue::ConflatingQueue;
+use linked_hash_map::LinkedHashMap;
 
 pub mod queue;
 pub mod receiver;
@@ -56,13 +57,38 @@ pub use self::sender::*;
 /// freely. They are connected in that sending via the [`Sender`]
 /// will result in the values being accessible through the
 /// corresponding [`Receiver`], except in the event of conflation.
-pub fn unbounded<K, V>() -> (Sender<K, V>, Receiver<K, V>)
+pub fn unbounded<'a, K, V>() -> (Sender<'a, K, V>, Receiver<'a, K, V>)
 where
     K: Eq,
     K: Hash,
+    K: 'a,
+    V: 'a,
+    K: Send,
+    V: Send,
+{
+    unbounded_with_queue(Box::new(LinkedHashMap::new()))
+}
+
+/// Create a conflating channel with no maximum capacity.
+///
+/// The subsequent [`Sender`] and [`Receiver`] that are returned
+/// are thread-safe, cloneable, and may be moved between threads
+/// freely. They are connected in that sending via the [`Sender`]
+/// will result in the values being accessible through the
+/// corresponding [`Receiver`], except in the event of conflation.
+pub fn unbounded_with_queue<'a, K, V>(
+    queue: Box<dyn ConflatingQueue<K, V> + 'a>,
+) -> (Sender<'a, K, V>, Receiver<'a, K, V>)
+where
+    K: Eq,
+    K: Hash,
+    K: 'a,
+    V: 'a,
+    K: Send,
+    V: Send,
 {
     let control = Arc::new(Mutex::new(ControlBlock {
-        queue: ConflatingQueue::new(),
+        queue: queue,
         disconnected: false,
         consumers: VecDeque::new(),
     }));

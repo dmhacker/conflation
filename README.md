@@ -8,10 +8,10 @@ A conflating queue is generally useful when two conditions are met:
 1. A producer is enqueueing items at a faster rate than a slower consumer can dequeue them.
 2. It is acceptable to drop in-flight messages by retaining only the most recently produced message along some (key) boundary.
 
-This channel offers the **strong** guarantee that a replacement will always occur
+This channel does not offer the strong guarantee that a replacement will always occur
 if a new keyed entry is inserted into the channel and an unread duplicate is already present.
-In this case, the duplicate will be dropped, and the new entry will take its place at the
-back of the queue.
+The duplicate may or may not be dropped at some indeterminate point in the future,
+generally to keep the queue under a specific maximum compaction ratio.
 
 Under the hood, the channel mechanism uses a linked hash map to perform conflation.
 This generally makes the channel slower than its `std` equivalents for workloads without

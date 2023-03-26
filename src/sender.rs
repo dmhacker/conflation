@@ -12,12 +12,12 @@ use super::signal::Signaller;
 /// Values submitted through the sender will be received by only one
 /// consumer, except in the event of conflation, in which case the
 /// message is dropped & no consumer receives it.
-pub struct Sender<K, V> {
+pub struct Sender<'a, K, V> {
     pub(super) refcount: Arc<AtomicUsize>,
-    pub(super) control: Arc<Mutex<ControlBlock<K, V>>>,
+    pub(super) control: Arc<Mutex<ControlBlock<'a, K, V>>>,
 }
 
-impl<K, V> Drop for Sender<K, V> {
+impl<K, V> Drop for Sender<'_, K, V> {
     fn drop(&mut self) {
         let remaining = self.refcount.fetch_sub(1, Ordering::Relaxed) - 1;
         if remaining == 0 {
@@ -38,8 +38,8 @@ impl<K, V> Drop for Sender<K, V> {
     }
 }
 
-impl<K, V> Clone for Sender<K, V> {
-    fn clone(&self) -> Sender<K, V> {
+impl<'a, K, V> Clone for Sender<'a, K, V> {
+    fn clone(&self) -> Sender<'a, K, V> {
         self.refcount.fetch_add(1, Ordering::Relaxed);
         Sender {
             refcount: self.refcount.clone(),
@@ -48,7 +48,7 @@ impl<K, V> Clone for Sender<K, V> {
     }
 }
 
-impl<K, V> Sender<K, V>
+impl<K, V> Sender<'_, K, V>
 where
     K: Eq,
     K: Hash,

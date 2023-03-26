@@ -17,12 +17,12 @@ use super::signal::{AnySignaller, AsyncSignaller, Signaller, SignallerResult, Sy
 /// Values obtained through the receiver are only accessible
 /// via one consumer. They are not broadcasted to multiple
 /// consumers.
-pub struct Receiver<K, V> {
+pub struct Receiver<'a, K, V> {
     pub(super) refcount: Arc<AtomicUsize>,
-    pub(super) control: Arc<Mutex<ControlBlock<K, V>>>,
+    pub(super) control: Arc<Mutex<ControlBlock<'a, K, V>>>,
 }
 
-impl<K, V> Drop for Receiver<K, V> {
+impl<K, V> Drop for Receiver<'_, K, V> {
     fn drop(&mut self) {
         let remaining = self.refcount.fetch_sub(1, Ordering::Relaxed) - 1;
         if remaining == 0 {
@@ -31,8 +31,8 @@ impl<K, V> Drop for Receiver<K, V> {
     }
 }
 
-impl<K, V> Clone for Receiver<K, V> {
-    fn clone(&self) -> Receiver<K, V> {
+impl<'a, K, V> Clone for Receiver<'a, K, V> {
+    fn clone(&self) -> Receiver<'a, K, V> {
         self.refcount.fetch_add(1, Ordering::Relaxed);
         Receiver {
             refcount: self.refcount.clone(),
@@ -41,11 +41,11 @@ impl<K, V> Clone for Receiver<K, V> {
     }
 }
 
-pub struct Iter<'a, K: 'a, V: 'a> {
-    receiver: &'a Receiver<K, V>,
+pub struct Iter<'a, 'b, K: 'a, V: 'a> {
+    receiver: &'b Receiver<'a, K, V>,
 }
 
-impl<'a, K, V> Iterator for Iter<'a, K, V>
+impl<'a, 'b, K, V> Iterator for Iter<'a, 'b, K, V>
 where
     K: Eq,
     K: Hash,
@@ -60,11 +60,11 @@ where
     }
 }
 
-pub struct TryIter<'a, K: 'a, V: 'a> {
-    receiver: &'a Receiver<K, V>,
+pub struct TryIter<'a, 'b, K: 'b, V: 'b> {
+    receiver: &'b Receiver<'a, K, V>,
 }
 
-impl<'a, K, V> Iterator for TryIter<'a, K, V>
+impl<'a, 'b, K, V> Iterator for TryIter<'a, 'b, K, V>
 where
     K: Eq,
     K: Hash,
@@ -87,13 +87,13 @@ enum RecvFutureState {
 /// Future that is resolved into a received messsage from
 /// a conflating channel.
 #[pin_project(PinnedDrop)]
-pub struct RecvFuture<'a, K, V> {
-    receiver: &'a Receiver<K, V>,
+pub struct RecvFuture<'a, 'b, K, V> {
+    receiver: &'b Receiver<'a, K, V>,
     state: RecvFutureState,
 }
 
 #[pinned_drop]
-impl<'a, K, V> PinnedDrop for RecvFuture<'a, K, V> {
+impl<'a, 'b, K, V> PinnedDrop for RecvFuture<'a, 'b, K, V> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
         if let RecvFutureState::Waiting(woken) = this.state {
@@ -114,7 +114,7 @@ impl<'a, K, V> PinnedDrop for RecvFuture<'a, K, V> {
     }
 }
 
-impl<'a, K, V> Future for RecvFuture<'a, K, V>
+impl<'a, 'b, K, V> Future for RecvFuture<'a, 'b, K, V>
 where
     K: Hash,
     K: Eq,
@@ -154,7 +154,7 @@ where
     }
 }
 
-impl<K, V> Receiver<K, V>
+impl<'a, K, V> Receiver<'a, K, V>
 where
     K: Eq,
     K: Hash,
@@ -240,7 +240,7 @@ where
     }
 
     /// Returns a future that represents the asynchronous retrieval of a value from the channel.
-    pub fn recv_async(&self) -> RecvFuture<'_, K, V> {
+    pub fn recv_async<'b>(&'b self) -> RecvFuture<'a, 'b, K, V> {
         RecvFuture {
             receiver: self,
             state: RecvFutureState::Waiting(Arc::new(AtomicBool::new(false))),
@@ -248,7 +248,7 @@ where
     }
 
     /// Returns a blocking, synchronous iterator that continuously receives values from the channel.
-    pub fn iter(&self) -> Iter<'_, K, V> {
+    pub fn iter<'b>(&'b self) -> Iter<'a, 'b, K, V> {
         Iter { receiver: self }
     }
 
@@ -256,7 +256,7 @@ where
     ///
     /// The iterator will not block if no values are present in the channel. Instead,
     /// it will return `None`.
-    pub fn try_iter(&self) -> TryIter<'_, K, V> {
+    pub fn try_iter<'b>(&'b self) -> TryIter<'a, 'b, K, V> {
         TryIter { receiver: self }
     }
 
