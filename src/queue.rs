@@ -2,16 +2,27 @@ use linked_hash_map::LinkedHashMap;
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
+/// Represents a keyed queue where the items are always
+/// returned in insertion order. Items with duplicate
+/// keys are allowed to be dropped according to some
+/// user-defined policy, although the frequency and
+/// behavior of this policy can vary by implementation.
 pub trait ConflatingQueue<K, V>: Send {
     fn len(&self) -> usize;
     fn pop_front(&mut self) -> Option<(K, V)>;
     fn insert(&mut self, key: K, value: V);
 }
 
+// Queue that does not conflate any elements until a
+// compaction event is triggered. The triggers for the event
+// are specified as a combination of the minimum allowabale
+// duplicate ratio and minimum size of the queue. The compaction
+// event results in all duplicates being cleared from the queue
+// (in a linear fashion).
 pub struct CompactingQueue<K, V> {
     queue: VecDeque<(K, V, bool)>,
     tails: HashMap<K, usize>,
-    max_compaction_ratio: f32,
+    min_compaction_ratio: f32,
     min_compaction_size: usize,
     duplicates: usize,
     shifts: usize,
@@ -23,20 +34,38 @@ where
     K: Hash,
     K: Clone,
 {
+    /// Returns a queue with the min compaction ratio set to 0.9
+    /// and min compaction count set to 1000.
+    ///
+    /// This means that the queue will only trigger a compaction event
+    /// when the number of items in the queue exceeds 1000 and when
+    /// the duplicate-to-unique element ratio exceeds 0.9.
     pub fn new() -> CompactingQueue<K, V> {
+        CompactingQueue::with_compaction_parameters(0.9, 1000)
+    }
+
+    /// Returns a new compacting queue using the specified parameters
+    /// for triggering a compaction event.
+    pub fn with_compaction_parameters(
+        min_compaction_ratio: f32,
+        min_compaction_usize: usize,
+    ) -> CompactingQueue<K, V> {
         CompactingQueue {
             queue: VecDeque::new(),
             tails: HashMap::new(),
-            max_compaction_ratio: 0.9,
-            min_compaction_size: 1000,
+            min_compaction_ratio: min_compaction_ratio,
+            min_compaction_size: min_compaction_usize,
             duplicates: 0,
             shifts: 0,
         }
     }
 
+    /// Triggers a compaction event if compaction ratio & queue length
+    /// conditions are met. The compaction event removes all duplicates
+    /// currently present in the queue.
     fn compact(&mut self) {
         if self.queue.len() <= self.min_compaction_size
-            || (self.duplicates as f32) < self.max_compaction_ratio * (self.queue.len() as f32)
+            || (self.duplicates as f32) < self.min_compaction_ratio * (self.queue.len() as f32)
         {
             return;
         }

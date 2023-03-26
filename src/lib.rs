@@ -57,6 +57,9 @@ pub use self::sender::*;
 /// freely. They are connected in that sending via the [`Sender`]
 /// will result in the values being accessible through the
 /// corresponding [`Receiver`], except in the event of conflation.
+///
+/// The default underlying queue implementation is a linked hash map.
+/// Duplicates are immediately removed upon insertion.
 pub fn unbounded<'a, K, V>() -> (Sender<'a, K, V>, Receiver<'a, K, V>)
 where
     K: Eq,
@@ -76,6 +79,11 @@ where
 /// freely. They are connected in that sending via the [`Sender`]
 /// will result in the values being accessible through the
 /// corresponding [`Receiver`], except in the event of conflation.
+///
+/// The queue implementation is user-specified and should implement
+/// the [`ConflatingQueue`] trait. Trait implementations for
+/// [`VecDeque<(K, V)>`], [`LinkedHashMap<K, V>`], [`CompactingQueue<K, V>`],
+/// have been provided already.
 pub fn unbounded_with_queue<'a, K, V>(
     queue: Box<dyn ConflatingQueue<K, V> + 'a>,
 ) -> (Sender<'a, K, V>, Receiver<'a, K, V>)
